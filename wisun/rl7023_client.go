@@ -76,7 +76,7 @@ func (c *RL7023Client) recvOK() error {
 }
 
 // Version is ..
-func (c RL7023Client) Version() (string, error) {
+func (c *RL7023Client) Version() (string, error) {
 	err := c.send([]byte("SKVER\r\n"))
 	if err != nil {
 		return "", err
@@ -106,7 +106,7 @@ func (c RL7023Client) Version() (string, error) {
 }
 
 // SetBRoutePassword is..
-func (c RL7023Client) SetBRoutePassword(password string) error {
+func (c *RL7023Client) SetBRoutePassword(password string) error {
 	if len(password) == 0 {
 		return fmt.Errorf("b-route password is empty")
 	}
@@ -120,7 +120,7 @@ func (c RL7023Client) SetBRoutePassword(password string) error {
 }
 
 // SetBRouteID  is ..
-func (c RL7023Client) SetBRouteID(id string) error {
+func (c *RL7023Client) SetBRouteID(id string) error {
 	if len(id) == 0 {
 		return fmt.Errorf("b-route ID is empty")
 	}
@@ -133,7 +133,7 @@ func (c RL7023Client) SetBRouteID(id string) error {
 	return c.recvOK()
 }
 
-func (c RL7023Client) scan(ctx context.Context, duration int) (bool, error) {
+func (c *RL7023Client) scan(ctx context.Context, duration int) (bool, error) {
 
 	err := c.send([]byte(fmt.Sprintf("SKSCAN 2 FFFFFFFF %d 0 \r\n", duration)))
 	if err != nil {
@@ -145,39 +145,33 @@ func (c RL7023Client) scan(ctx context.Context, duration int) (bool, error) {
 		return false, err
 	}
 
+	// EVENT 20 or 22 を待つ
 	for {
-		ch := make(chan error)
-		var data []byte
-		go func(data *[]byte) {
-			res, err := c.recv()
-			if err != nil {
-				log.Println(err)
-				ch <- err
-			}
-
-			if bytes.HasPrefix(res, []byte("EVENT 22")) {
-				log.Println("found EVENT 22")
-				ch <- nil
-			}
-			if bytes.HasPrefix(res, []byte("EVENT 20")) {
-				log.Println("found EVENT 20")
-				*data = res
-				ch <- nil
-			}
-		}(&data)
-
 		select {
-		case err := <-ch:
-			if err == nil {
-				return len(data) != 0, nil
-			}
 		case <-ctx.Done():
 			return false, fmt.Errorf("scan timeout: %w", ctx.Err())
+		default:
+			res, err := c.recv()
+			if err != nil {
+				if err.Error() == "serial: timeout" {
+					continue
+				}
+				return false, err
+			}
+			// EVENT 20 はビーコン受信(スマートメーター発見)を示す
+			if bytes.HasPrefix(res, []byte("EVENT 20")) {
+				return true, nil
+			}
+			// EVENT 22 はスキャン完了を示す(スマートメーターが見つからなかった)
+			if bytes.HasPrefix(res, []byte("EVENT 22")) {
+				return false, nil
+			}
+			// その他の行は無視
 		}
 	}
 }
 
-func (c RL7023Client) receivePanDesc() (PanDesc, error) {
+func (c *RL7023Client) receivePanDesc() (PanDesc, error) {
 	ed := PanDesc{}
 	line, err := c.recv()
 	if err == nil && bytes.HasPrefix(line, []byte("EPANDESC")) {
@@ -207,8 +201,26 @@ func (c RL7023Client) receivePanDesc() (PanDesc, error) {
 	return ed, err
 }
 
+func (c *RL7023Client) waitScanComplete() error {
+
+	// スマートメーター発見後のEVENT 22 を待つ
+	for {
+		res, err := c.recv()
+		if err != nil {
+			if err.Error() == "serial: timeout" {
+				continue
+			}
+			return err
+		}
+		// EVENT 22 スキャン完了まで待機
+		if bytes.HasPrefix(res, []byte("EVENT 22")) {
+			return nil
+		}
+	}
+}
+
 // Scan is ..
-func (c RL7023Client) Scan(ctx context.Context) (PanDesc, error) {
+func (c *RL7023Client) Scan(ctx context.Context) (PanDesc, error) {
 	duration := 4
 	for {
 		if duration > 8 {
@@ -232,9 +244,12 @@ func (c RL7023Client) Scan(ctx context.Context) (PanDesc, error) {
 }
 
 // LL64 is .
-func (c RL7023Client) LL64(addr string) (string, error) {
+func (c *RL7023Client) LL64(addr string) (string, error) {
 	cmd := fmt.Sprintf("SKLL64 %s\r\n", addr)
-	c.send([]byte(cmd))
+	err := c.send([]byte(cmd))
+	if err != nil {
+		return "", err
+	}
 	line, err := c.recv()
 	if err != nil {
 		return "", err
@@ -245,26 +260,36 @@ func (c RL7023Client) LL64(addr string) (string, error) {
 }
 
 // SRegS2 is.
-func (c RL7023Client) SRegS2(channel string) error {
+func (c *RL7023Client) SRegS2(channel string) error {
 	cmd := fmt.Sprintf("SKSREG S2 %s\r\n", channel)
-	c.send([]byte(cmd))
-	c.recv()
-	return nil
+	err := c.send([]byte(cmd))
+	if err != nil {
+		return err
+	}
+	return c.recvOK()
 }
 
 // SRegS3 is ..
-func (c RL7023Client) SRegS3(panID string) error {
+func (c *RL7023Client) SRegS3(panID string) error {
 	cmd := fmt.Sprintf("SKSREG S3 %s\r\n", panID)
-	c.send([]byte(cmd))
-	c.recv()
-	return nil
+	err := c.send([]byte(cmd))
+	if err != nil {
+		return err
+	}
+	return c.recvOK()
 }
 
 // Join is ..
 func (c *RL7023Client) Join(desc PanDesc) (bool, error) {
 	cmd := fmt.Sprintf("SKJOIN %s\r\n", desc.IPV6Addr)
-	c.send([]byte(cmd))
-	c.recv()
+	err := c.send([]byte(cmd))
+	if err != nil {
+		return false, err
+	}
+	err = c.recvOK()
+	if err != nil {
+		return false, fmt.Errorf("SKJOIN command failed: %w", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
@@ -278,10 +303,10 @@ func (c *RL7023Client) Join(desc PanDesc) (bool, error) {
 		default:
 			res, err := c.recv()
 			if err != nil {
-				log.Println(err)
 				if err.Error() == "serial: timeout" {
 					continue
 				}
+				log.Println(err)
 				return false, fmt.Errorf("join failed: %w", err)
 			}
 
@@ -291,25 +316,34 @@ func (c *RL7023Client) Join(desc PanDesc) (bool, error) {
 			switch eventType {
 			case "EVENT":
 				if len(tokens) < 2 {
-					return false, fmt.Errorf("invalid format [%s]", res)
+					log.Printf("invalid EVENT format [%s]", res)
+					continue
 				}
 				num, err := strconv.ParseInt(string(tokens[1]), 16, 8)
 				if err != nil {
-					return false, fmt.Errorf("invalid EVENT num [%s]", res)
+					log.Printf("invalid EVENT num [%s]", res)
+					continue
 				}
 				switch num {
 				case 0x24:
-					log.Println("Join failed")
-					return false, nil
+					log.Println("Join failed (EVENT 24)")
+					return false, fmt.Errorf("PANA connection failed")
 				case 0x25:
 					log.Println("Join succeed")
 					c.joined = true
 					return true, nil
+				default:
+					log.Printf("Ignored EVENT %x during Join: %s", num, string(res))
+				}
+			case "ERXUDP":
+				log.Printf("Received ERXUDP during Join: %s", string(res))
+			default:
+				if eventType != "OK" {
+					log.Printf("Ignored line during Join: %s", string(res))
 				}
 			}
 		}
 	}
-
 }
 
 // Send is...
@@ -411,14 +445,11 @@ func (c *RL7023Client) Connect(ctx context.Context, bRouteID, bRoutePW string) e
 		return err
 	}
 
-	ipv6Addr, err := c.LL64(pd.Addr)
+	err = c.waitScanComplete()
 	if err != nil {
-		err := fmt.Errorf("LL64 failed: %w", err)
+		err := fmt.Errorf("Scan Complate failed: %w", err)
 		return err
 	}
-
-	pd.IPV6Addr = ipv6Addr
-	log.Printf("Translated address:%#v", pd)
 
 	err = c.SRegS2(pd.Channel)
 	if err != nil {
@@ -431,6 +462,15 @@ func (c *RL7023Client) Connect(ctx context.Context, bRouteID, bRoutePW string) e
 		err := fmt.Errorf("SRegS3 failed: %w", err)
 		return err
 	}
+
+	ipv6Addr, err := c.LL64(pd.Addr)
+	if err != nil {
+		err := fmt.Errorf("LL64 failed: %w", err)
+		return err
+	}
+
+	pd.IPV6Addr = ipv6Addr
+	log.Printf("Translated address:%#v", pd)
 
 	// PANA authentication
 	joined, err := c.Join(pd)
@@ -450,7 +490,8 @@ func (c *RL7023Client) Connect(ctx context.Context, bRouteID, bRoutePW string) e
 }
 
 // Term terminates PANA session
-func (c RL7023Client) Term() {
+func (c *RL7023Client) Term() {
 	c.send([]byte("SKTERM\r\n"))
+	// SKTERMはOKを返さない場合がある
 	c.recv()
 }

@@ -1,4 +1,35 @@
 
+## 📝 自分向けメモ
+
+秋月白箱（謎SoC基盤）への導入資材である、smartmeter-exporterコマンドの個人用forkです。
+下記リポジトリ内資材のビルド時に参照します。
+
+- https://github.com/WhiteNoise0000/buildroot_am3352_aki
+
+## 🛠️ 個人的に加えた変更
+- SKコマンド発行タイミングを、自宅環境向けに微調整（スキャン完了待機後にSKJOIN）
+
+## ⚠️ 注意 / Notice
+
+このリポジトリは、以下のオリジナルリポジトリを個人利用のためにforkしたものです：
+
+- https://github.com/u-one/go-el-controller
+- https://github.com/matsuu/go-el-controller
+
+元のリポジトリにはライセンス表記が存在しません。  
+そのため、このforkは **私的利用（自宅環境での使用）を唯一の目的とし、再配布や第三者向けの公開利用を行う意図は一切ありません**。
+
+---
+
+This repository is a personal fork of the following original project:
+
+- https://github.com/u-one/go-el-controller
+- https://github.com/matsuu/go-el-controller
+
+The original repository does not specify a license.  
+Therefore, this fork is intended **strictly for private/home use** and is **not meant for redistribution or public reuse**.
+
+## 元README
 # golang EchonetLite Controller
 
 and prometheus exporter
@@ -33,7 +64,7 @@ go test ./... -tags medium
 ### Build for Raspberry pi
 
 ```
-env GOOS=linux GOARCH=arm GOARM=6 go build
+env GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w" -trimpath
 ```
 
 

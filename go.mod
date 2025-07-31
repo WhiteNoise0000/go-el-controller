@@ -1,4 +1,4 @@
-module github.com/matsuu/go-el-controller
+module github.com/WhiteNoise0000/go-el-controller
 
 go 1.13
 
