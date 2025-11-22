@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
-
+	"time"
 	"github.com/u-one/go-el-controller/transport"
 )
 
@@ -16,15 +16,22 @@ type RL7023Client struct {
 	sendSeq int
 	readSeq int
 	serial  transport.Serial
-	panDesc PanDesc
-	joined  bool
+	panDesc    PanDesc
+	joined     bool
+	bRouteID        string
+	bRoutePW        string
+	errorCount      int
+	backoffDuration time.Duration
 }
 
 // NewRL7023Client returns RL7023Client instance
 func NewRL7023Client(portaddr string) *RL7023Client {
 	fmt.Println("NewRL7023Client: ", portaddr)
 	s := transport.NewSerialImpl(portaddr)
-	return &RL7023Client{serial: s}
+	return &RL7023Client{
+		serial:          s,
+		backoffDuration: 1 * time.Minute,
+	}
 }
 
 // Close closees connection
@@ -346,8 +353,43 @@ func (c *RL7023Client) Join(desc PanDesc) (bool, error) {
 	}
 }
 
-// Send is...
+// Send sends data and checks for errors/recovery
 func (c *RL7023Client) Send(data []byte) ([]byte, error) {
+	res, err := c.sendCore(data)
+
+	// Check for ECHONET Lite Get_SNA (ESV=0x52)
+	// EHD1(1)+EHD2(1)+TID(2)+SEOJ(3)+DEOJ(3) = 10 bytes. ESV is at index 10.
+	if err == nil && len(res) > 10 && res[10] == 0x52 {
+		err = fmt.Errorf("received SNA")
+	}
+
+	if err != nil {
+		c.errorCount++
+		log.Printf("Send error (count=%d): %v", c.errorCount, err)
+
+		if c.errorCount > 5 {
+			log.Println("Error count exceeded threshold, triggering Reconnect...")
+			if recErr := c.Reconnect(); recErr != nil {
+				log.Printf("Reconnect failed: %v", recErr)
+			} else {
+				log.Println("Reconnect success, resetting error count")
+				c.errorCount = 0
+			}
+			return nil, err
+		}
+
+		// Backoff
+		log.Printf("Waiting %v (backoff)...", c.backoffDuration)
+		time.Sleep(c.backoffDuration)
+		return nil, err
+	}
+
+	c.errorCount = 0
+	return res, nil
+}
+
+// sendCore is the internal implementation of Send
+func (c *RL7023Client) sendCore(data []byte) ([]byte, error) {
 	ipv6 := c.panDesc.IPV6Addr
 	cmd := []byte(fmt.Sprintf("SKSENDTO 1 %s 0E1A 1 0 %04X ", ipv6, len(data)))
 	cmd = append(cmd, data...)
@@ -427,6 +469,12 @@ func (c *RL7023Client) Connect(ctx context.Context, bRouteID, bRoutePW string) e
 		return err
 	}
 
+	c.bRouteID = bRouteID
+	c.bRoutePW = bRoutePW
+
+	// 1. 起動時のセッションクリーンアップ
+	c.Term()
+
 	err := c.SetBRoutePassword(bRoutePW)
 	if err != nil {
 		err := fmt.Errorf("SetBRoutePassword failed: %w", err)
@@ -487,6 +535,15 @@ func (c *RL7023Client) Connect(ctx context.Context, bRouteID, bRoutePW string) e
 
 	// TODO: return error
 	return nil
+}
+
+// Reconnect reconnects to smart-meter
+func (c *RL7023Client) Reconnect() error {
+	c.Term()
+	time.Sleep(10 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return c.Connect(ctx, c.bRouteID, c.bRoutePW)
 }
 
 // Term terminates PANA session
