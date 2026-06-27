@@ -73,10 +73,28 @@ func stringWithBinary(data []byte) string {
 			s := string(token)
 			s = strings.ReplaceAll(s, "\r", "\\r")
 			s = strings.ReplaceAll(s, "\n", "\\n")
+			s = maskSensitiveSKCommand(tokens, i, s)
 			fmt.Fprintf(&b, "%s", s)
 		}
 	}
 	return b.String()
+}
+
+func maskSensitiveSKCommand(tokens [][]byte, index int, token string) string {
+	if len(tokens) == 0 {
+		return token
+	}
+	switch string(tokens[0]) {
+	case "SKSETPWD":
+		if index == 2 {
+			return "************"
+		}
+	case "SKSETRBID":
+		if index == 1 {
+			return "********************************"
+		}
+	}
+	return token
 }
 
 // Send sends serial command

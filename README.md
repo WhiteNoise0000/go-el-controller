@@ -8,6 +8,8 @@
 
 ## 🛠️ 個人的に加えた変更
 - SKコマンド発行タイミングを、自宅環境向けに微調整（スキャン完了待機後にSKJOIN）
+- smartmeter-exporterに積算電力量（E0/D3/E1）とBルート通信状態のPrometheusメトリクスを追加
+- BルートID/PWが送信ログに平文で出ないようにSKSETPWD/SKSETRBIDのログ表示をマスク
 
 ## ⚠️ 注意 / Notice
 

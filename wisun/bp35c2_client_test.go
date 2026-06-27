@@ -594,3 +594,35 @@ func Test_Send(t *testing.T) {
 		})
 	}
 }
+
+func TestStringWithBinaryMasksBRouteSecrets(t *testing.T) {
+	t.Parallel()
+
+	testcases := []struct {
+		name  string
+		input []byte
+		want  string
+	}{
+		{
+			name:  "password",
+			input: []byte("SKSETPWD C TESTPWDYYYYY\r\n"),
+			want:  "SKSETPWD C ************",
+		},
+		{
+			name:  "b-route id",
+			input: []byte("SKSETRBID 000000TESTID00000000000000000000\r\n"),
+			want:  "SKSETRBID ********************************",
+		},
+	}
+
+	for _, tc := range testcases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := stringWithBinary(tc.input)
+			if got != tc.want {
+				t.Fatalf("want %q, got %q", tc.want, got)
+			}
+		})
+	}
+}

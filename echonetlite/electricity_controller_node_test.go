@@ -149,6 +149,30 @@ func TestGetPowerConsumption(t *testing.T) {
 
 }
 
+func TestUpdateSmartMeterMetricsKeepsInstantPowerWhenAdditionalReadsFail(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mock := wisun.NewMockClient(ctrl)
+
+	mock.EXPECT().
+		Send([]byte("\x10\x81\x00\x01\x05\xff\x01\x02\x88\x01\x62\x01\xe7\x00")).
+		Return([]byte("\x10\x81\x00\x01\x02\x88\x01\x05\xff\x01\x72\x01\xe7\x04\x00\x00\x01\xf8"), nil)
+	mock.EXPECT().
+		Send([]byte("\x10\x81\x00\x02\x05\xff\x01\x02\x88\x01\x62\x01\xd3\x00")).
+		Return([]byte{}, fmt.Errorf("coefficient read failed"))
+	mock.EXPECT().
+		Send([]byte("\x10\x81\x00\x03\x05\xff\x01\x02\x88\x01\x62\x01\xe1\x00")).
+		Return([]byte{}, fmt.Errorf("unit read failed"))
+	mock.EXPECT().
+		Send([]byte("\x10\x81\x00\x04\x05\xff\x01\x02\x88\x01\x62\x01\xe0\x00")).
+		Return([]byte{}, fmt.Errorf("cumulative energy read failed"))
+
+	node := NewElectricityControllerNode(mock)
+	if err := node.UpdateSmartMeterMetrics(); err != nil {
+		t.Fatalf("instant power success should not be hidden by additional read failures: %v", err)
+	}
+}
+
 /*
 func Test_Get(t *testing.T) {
 	ctrl := gomock.NewController(t)
