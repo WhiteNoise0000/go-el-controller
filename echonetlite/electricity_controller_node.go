@@ -181,12 +181,17 @@ func (n *ElectricityControllerNode) UpdateSmartMeterMetrics() error {
 		}
 	}
 
+	// Keep a small gap between optional B-route reads; dense consecutive GETs can be fragile on weak radio links.
+	time.Sleep(200 * time.Millisecond)
+
 	if !n.unitRead {
 		if err := n.updateEnergyUnit(); err != nil {
 			log.Printf("failed to read smart meter cumulative energy unit E1: %v", err)
 			recordReadError()
 		}
 	}
+
+	time.Sleep(200 * time.Millisecond)
 
 	if err := n.updateCumulativeEnergy(); err != nil {
 		log.Printf("failed to read smart meter cumulative energy E0: %v", err)
