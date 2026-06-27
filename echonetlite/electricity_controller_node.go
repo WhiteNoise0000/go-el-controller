@@ -3,12 +3,15 @@ package echonetlite
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+var errSmartMeterGetSNA = errors.New("smart meter returned Get_SNA")
 
 var (
 	gpower = prometheus.NewGauge(
@@ -149,9 +152,11 @@ func (n *ElectricityControllerNode) GetPowerConsumption() (int, error) {
 	power, err := n.readInstantPower()
 	if err != nil {
 		recordReadError()
+		gConnected.Set(0)
 		return 0, err
 	}
 	updateInstantPowerMetrics(power)
+	gConnected.Set(1)
 	gLastSuccessUnixTime.Set(float64(time.Now().Unix()))
 	logger.Printf("Power: %d [W]", power)
 	return power, nil
@@ -169,7 +174,9 @@ func (n *ElectricityControllerNode) UpdateSmartMeterMetrics() error {
 			log.Printf("failed to read smart meter coefficient D3, using 1: %v", err)
 			recordReadError()
 			n.coefficient = 1
-			n.coefficientRead = true
+			if errors.Is(err, errSmartMeterGetSNA) {
+				n.coefficientRead = true
+			}
 			gCoefficient.Set(1)
 		}
 	}
@@ -280,7 +287,7 @@ func (n *ElectricityControllerNode) readSmartMeterProperty(code PropertyCode) (P
 			}
 		}
 	case GetSNA:
-		return Property{}, fmt.Errorf("smart meter returned Get_SNA for EPC 0x%02x", byte(code))
+		return Property{}, fmt.Errorf("%w for EPC 0x%02x", errSmartMeterGetSNA, byte(code))
 	default:
 	}
 

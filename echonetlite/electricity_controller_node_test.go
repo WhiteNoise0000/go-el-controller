@@ -7,6 +7,7 @@ import (
 
 	gomock "github.com/golang/mock/gomock"
 	"github.com/google/go-cmp/cmp"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/u-one/go-el-controller/wisun"
 )
 
@@ -170,6 +171,71 @@ func TestUpdateSmartMeterMetricsKeepsInstantPowerWhenAdditionalReadsFail(t *test
 	node := NewElectricityControllerNode(mock)
 	if err := node.UpdateSmartMeterMetrics(); err != nil {
 		t.Fatalf("instant power success should not be hidden by additional read failures: %v", err)
+	}
+}
+
+func TestUpdateSmartMeterMetricsRetriesCoefficientAfterTemporaryFailure(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mock := wisun.NewMockClient(ctrl)
+
+	mock.EXPECT().
+		Send([]byte("\x10\x81\x00\x01\x05\xff\x01\x02\x88\x01\x62\x01\xe7\x00")).
+		Return([]byte("\x10\x81\x00\x01\x02\x88\x01\x05\xff\x01\x72\x01\xe7\x04\x00\x00\x01\xf8"), nil)
+	mock.EXPECT().
+		Send([]byte("\x10\x81\x00\x02\x05\xff\x01\x02\x88\x01\x62\x01\xd3\x00")).
+		Return([]byte{}, fmt.Errorf("temporary coefficient read failure"))
+	mock.EXPECT().
+		Send([]byte("\x10\x81\x00\x03\x05\xff\x01\x02\x88\x01\x62\x01\xe0\x00")).
+		Return([]byte{}, fmt.Errorf("cumulative energy read failed"))
+	mock.EXPECT().
+		Send([]byte("\x10\x81\x00\x04\x05\xff\x01\x02\x88\x01\x62\x01\xe7\x00")).
+		Return([]byte("\x10\x81\x00\x04\x02\x88\x01\x05\xff\x01\x72\x01\xe7\x04\x00\x00\x01\xf8"), nil)
+	mock.EXPECT().
+		Send([]byte("\x10\x81\x00\x05\x05\xff\x01\x02\x88\x01\x62\x01\xd3\x00")).
+		Return([]byte("\x10\x81\x00\x05\x02\x88\x01\x05\xff\x01\x72\x01\xd3\x04\x00\x00\x00\x02"), nil)
+	mock.EXPECT().
+		Send([]byte("\x10\x81\x00\x06\x05\xff\x01\x02\x88\x01\x62\x01\xe0\x00")).
+		Return([]byte{}, fmt.Errorf("cumulative energy read failed"))
+
+	node := NewElectricityControllerNode(mock)
+	node.unitRead = true
+	node.unitKWh = 1
+
+	if err := node.UpdateSmartMeterMetrics(); err != nil {
+		t.Fatalf("first update failed: %v", err)
+	}
+	if node.coefficientRead {
+		t.Fatalf("coefficient should not be marked as read after temporary failure")
+	}
+
+	if err := node.UpdateSmartMeterMetrics(); err != nil {
+		t.Fatalf("second update failed: %v", err)
+	}
+	if !node.coefficientRead {
+		t.Fatalf("coefficient should be marked as read after successful retry")
+	}
+	if node.coefficient != 2 {
+		t.Fatalf("want coefficient 2, got %d", node.coefficient)
+	}
+}
+
+func TestGetPowerConsumptionSetsConnectedToZeroOnInstantPowerFailure(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mock := wisun.NewMockClient(ctrl)
+	mock.EXPECT().
+		Send([]byte("\x10\x81\x00\x01\x05\xff\x01\x02\x88\x01\x62\x01\xe7\x00")).
+		Return([]byte{}, fmt.Errorf("instant power read failed"))
+
+	gConnected.Set(1)
+	node := NewElectricityControllerNode(mock)
+	_, err := node.GetPowerConsumption()
+	if err == nil {
+		t.Fatalf("expected instant power read error")
+	}
+	if got := testutil.ToFloat64(gConnected); got != 0 {
+		t.Fatalf("connected gauge should be 0 after E7 failure, got %v", got)
 	}
 }
 
