@@ -49,7 +49,7 @@ const (
 
 	// 低圧スマート電力量メータクラス
 	// Class Group Code: 0x02, Class Code: 0x88
-	Coefficient                           PropertyCode = 0xD7 // 係数
+	LowVoltageSmartMeterCoefficient       PropertyCode = 0xD3 // 係数
 	IntegralPowerConsumptionValidDigits   PropertyCode = 0xD7 // 積算電力量有効桁数
 	IntegralPowerConsumption              PropertyCode = 0xE0 // 積算電力量計測値(正方向計測値)
 	IntegralPowerConsumptionUnit          PropertyCode = 0xE1 // 積算電力量単位(正方向、逆方向計測値)

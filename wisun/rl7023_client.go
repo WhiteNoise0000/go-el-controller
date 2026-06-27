@@ -5,19 +5,19 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"github.com/u-one/go-el-controller/transport"
 	"log"
 	"strconv"
 	"time"
-	"github.com/u-one/go-el-controller/transport"
 )
 
 // RL7023Client is client for TESSERA RL7023
 type RL7023Client struct {
-	sendSeq int
-	readSeq int
-	serial  transport.Serial
-	panDesc    PanDesc
-	joined     bool
+	sendSeq         int
+	readSeq         int
+	serial          transport.Serial
+	panDesc         PanDesc
+	joined          bool
 	bRouteID        string
 	bRoutePW        string
 	errorCount      int
@@ -428,6 +428,9 @@ func (c *RL7023Client) sendCore(data []byte) ([]byte, error) {
 				}
 				switch num {
 				case 0x21:
+					if err := event21SendError(res, tokens); err != nil {
+						return nil, err
+					}
 					log.Println("UDP send succeed")
 				default:
 					log.Printf("unexpected EVENT %x\n", num)

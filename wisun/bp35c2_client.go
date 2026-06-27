@@ -73,10 +73,39 @@ func stringWithBinary(data []byte) string {
 			s := string(token)
 			s = strings.ReplaceAll(s, "\r", "\\r")
 			s = strings.ReplaceAll(s, "\n", "\\n")
+			s = maskSensitiveSKCommand(tokens, i, s)
 			fmt.Fprintf(&b, "%s", s)
 		}
 	}
 	return b.String()
+}
+
+func maskSensitiveSKCommand(tokens [][]byte, index int, token string) string {
+	if len(tokens) == 0 {
+		return token
+	}
+	switch string(tokens[0]) {
+	case "SKSETPWD":
+		if index == 2 {
+			return "************"
+		}
+	case "SKSETRBID":
+		if index == 1 {
+			return "********************************"
+		}
+	}
+	return token
+}
+
+func event21SendError(res []byte, tokens [][]byte) error {
+	if len(tokens) < 3 {
+		return fmt.Errorf("invalid EVENT 21 format [%s]", res)
+	}
+	status := string(tokens[len(tokens)-1])
+	if status != "00" {
+		return fmt.Errorf("UDP send failed: EVENT 21 status %s [%s]", status, res)
+	}
+	return nil
 }
 
 // Send sends serial command
@@ -396,6 +425,9 @@ func (c *BP35C2Client) Send(data []byte) ([]byte, error) {
 				}
 				switch num {
 				case 0x21:
+					if err := event21SendError(res, tokens); err != nil {
+						return nil, err
+					}
 					log.Println("UDP send succeed")
 				default:
 					log.Printf("unexpected EVENT %x\n", num)

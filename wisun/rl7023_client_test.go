@@ -539,7 +539,11 @@ func Test_RL7023_Join(t *testing.T) {
 				t.Errorf("Diffrent result: -want, +got: \n%s", diff)
 			}
 
-			if tc.err != err {
+			if tc.err != nil && err != nil {
+				if tc.err.Error() != err.Error() {
+					t.Errorf("Diffrent error: want:%v, got:%v", tc.err, err)
+				}
+			} else if tc.err != err {
 				t.Errorf("Diffrent error: want:%v, got:%v", tc.err, err)
 			}
 		})
@@ -570,6 +574,16 @@ func Test_RL7023_Send(t *testing.T) {
 			want: []byte{0x10, 0x81, 0x00, 0x01, 0x02, 0x88, 0x01, 0x05, 0xff, 0x01, 'r', 0x01, 0xe7, 0x04, 0x00, 0x00, 0x01, 0xf8},
 			err:  nil,
 		},
+		{
+			name:  "event 21 send error",
+			data:  []byte{'X', 'X', 'X', 'X'},
+			input: "SKSENDTO 1 2001:0DB8:0000:0000:011A:1111:0000:0002 0E1A 1 0 000E \r\n",
+			response: []resp_RL7023{
+				{"EVENT 21 2001:0DB8:0000:0000:011A:1111:0000:0002 0 01\r\n", nil},
+			},
+			want: nil,
+			err:  fmt.Errorf("UDP send failed: EVENT 21 status 01 [EVENT 21 2001:0DB8:0000:0000:011A:1111:0000:0002 0 01]"),
+		},
 	}
 
 	for _, tc := range testcases {
@@ -583,12 +597,17 @@ func Test_RL7023_Send(t *testing.T) {
 			mock_RL7023(t, m, tc.input, tc.response)
 
 			c := &RL7023Client{serial: m, panDesc: PanDesc{IPV6Addr: "2001:0DB8:0000:0000:011A:1111:0000:0002"}}
+			c.backoffDuration = 0
 			got, err := c.Send(tc.data)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("Diffrent result: -want, +got: \n%s", diff)
 			}
 
-			if tc.err != err {
+			if tc.err != nil && err != nil {
+				if tc.err.Error() != err.Error() {
+					t.Errorf("Diffrent error: want:%v, got:%v", tc.err, err)
+				}
+			} else if tc.err != err {
 				t.Errorf("Diffrent error: want:%v, got:%v", tc.err, err)
 			}
 		})

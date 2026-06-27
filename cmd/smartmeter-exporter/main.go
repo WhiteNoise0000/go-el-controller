@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/WhiteNoise0000/go-el-controller/echonetlite"
 	"github.com/WhiteNoise0000/go-el-controller/wisun"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var version string
@@ -101,7 +101,7 @@ func run() error {
 		for {
 			select {
 			case <-t.C:
-				_, err := node.GetPowerConsumption()
+				err := node.UpdateSmartMeterMetrics()
 				if err != nil {
 					log.Println(err)
 				}
