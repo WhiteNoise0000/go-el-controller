@@ -22,6 +22,7 @@ type RL7023Client struct {
 	bRoutePW        string
 	errorCount      int
 	backoffDuration time.Duration
+	reconnectDelay  time.Duration
 }
 
 // NewRL7023Client returns RL7023Client instance
@@ -31,6 +32,7 @@ func NewRL7023Client(portaddr string) *RL7023Client {
 	return &RL7023Client{
 		serial:          s,
 		backoffDuration: 1 * time.Minute,
+		reconnectDelay:  10 * time.Second,
 	}
 }
 
@@ -51,11 +53,31 @@ func (c *RL7023Client) send(in []byte) error {
 		return err
 	}
 	// Echoback
-	_, err = c.recv()
+	echo, err := c.recv()
 	if err != nil {
 		return err
 	}
+	if !commandEchoMatches(in, echo) {
+		return fmt.Errorf("unexpected command echo [%s]", stringWithBinary(echo))
+	}
 	return nil
+}
+
+func commandEchoMatches(command, echo []byte) bool {
+	command = bytes.TrimSuffix(command, []byte{'\r', '\n'})
+	echo = bytes.TrimSuffix(echo, []byte{'\r', '\n'})
+
+	// RL7023 echoes SKSENDTO only through the textual header; the binary
+	// payload is not part of the echoed line.
+	if bytes.HasPrefix(command, []byte("SKSENDTO ")) {
+		fields := bytes.SplitN(command, []byte{' '}, 8)
+		if len(fields) == 8 {
+			command = bytes.Join(fields[:7], []byte{' '})
+		}
+	}
+
+	return bytes.Equal(echo, command) ||
+		(bytes.HasPrefix(command, []byte("SKSENDTO ")) && bytes.HasPrefix(echo, command))
 }
 
 // recv receives serial response by line
@@ -394,7 +416,9 @@ func (c *RL7023Client) sendCore(data []byte) ([]byte, error) {
 	cmd := []byte(fmt.Sprintf("SKSENDTO 1 %s 0E1A 1 0 %04X ", ipv6, len(data)))
 	cmd = append(cmd, data...)
 	cmd = append(cmd, []byte("\r\n")...)
-	c.send(cmd)
+	if err := c.send(cmd); err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
@@ -429,6 +453,7 @@ func (c *RL7023Client) sendCore(data []byte) ([]byte, error) {
 				switch num {
 				case 0x21:
 					if err := event21SendError(res, tokens); err != nil {
+						c.drainFailedSendResponse()
 						return nil, err
 					}
 					log.Println("UDP send succeed")
@@ -457,6 +482,39 @@ func (c *RL7023Client) sendCore(data []byte) ([]byte, error) {
 				}
 			}
 		}
+	}
+}
+
+// drainFailedSendResponse consumes the command-completion lines that can
+// follow a failed EVENT 21. Asynchronous EVENT lines may be interleaved before
+// the command's OK, so consume them here instead of passing them to the next
+// command as its echo.
+func (c *RL7023Client) drainFailedSendResponse() {
+	seenOK := false
+	for {
+		line, err := c.recv()
+		if err != nil {
+			return
+		}
+
+		if seenOK {
+			// A failed SKSENDTO is followed by a blank line after OK.
+			if len(line) == 0 {
+				return
+			}
+		} else {
+			if len(line) == 0 {
+				continue
+			}
+			if bytes.Equal(line, []byte("OK")) {
+				seenOK = true
+				continue
+			}
+		}
+
+		// RL7023 may report asynchronous session events while completing
+		// the failed SKSENDTO. They belong to this cleanup sequence.
+		log.Printf("discarding trailing response [%s]", stringWithBinary(line))
 	}
 }
 
@@ -542,8 +600,7 @@ func (c *RL7023Client) Connect(ctx context.Context, bRouteID, bRoutePW string) e
 
 // Reconnect reconnects to smart-meter
 func (c *RL7023Client) Reconnect() error {
-	c.Term()
-	time.Sleep(10 * time.Second)
+	time.Sleep(c.reconnectDelay)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	return c.Connect(ctx, c.bRouteID, c.bRoutePW)
@@ -551,7 +608,63 @@ func (c *RL7023Client) Reconnect() error {
 
 // Term terminates PANA session
 func (c *RL7023Client) Term() {
-	c.send([]byte("SKTERM\r\n"))
-	// SKTERMはOKを返さない場合がある
-	c.recv()
+	if err := c.send([]byte("SKTERM\r\n")); err != nil {
+		return
+	}
+
+	// SKTERMは既にセッションがない場合にFAIL ER10を返すが、これは
+	// 再接続前のクリーンアップとしては正常な状態である。
+	// OKの後にはセッション終了イベントが非同期に届くため、次の
+	// コマンドへ漏れないようEVENT 27/28まで消費する。
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+
+	gotOK := false
+	gotTermEvent := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		line, err := c.recv()
+		if err != nil {
+			if err.Error() == "serial: timeout" {
+				continue
+			}
+			return
+		}
+
+		tokens := bytes.Fields(line)
+		isTermEvent := false
+		if len(tokens) >= 2 && bytes.Equal(tokens[0], []byte("EVENT")) {
+			num, err := strconv.ParseInt(string(tokens[1]), 16, 8)
+			if err == nil && (num == 0x27 || num == 0x28) {
+				isTermEvent = true
+				gotTermEvent = true
+				log.Printf("SKTERM completed with EVENT %x", num)
+			}
+		}
+
+		if !gotOK {
+			switch {
+			case bytes.Equal(line, []byte("FAIL ER10")):
+				return
+			case bytes.Equal(line, []byte("OK")):
+				gotOK = true
+				if gotTermEvent {
+					return
+				}
+			case !isTermEvent:
+				log.Printf("discarding SKTERM response [%s]", stringWithBinary(line))
+			}
+			continue
+		}
+
+		if isTermEvent {
+			return
+		}
+		log.Printf("discarding trailing SKTERM response [%s]", stringWithBinary(line))
+	}
 }

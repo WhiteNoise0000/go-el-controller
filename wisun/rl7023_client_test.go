@@ -32,6 +32,8 @@ func mock_RL7023(t *testing.T, m *transport.MockSerial, input string, response [
 		var err error
 		if respCnt == -1 {
 			resp = lastCmd
+		} else if respCnt >= len(response) {
+			return nil, fmt.Errorf("no more responses")
 		} else {
 			resp = response[respCnt].d
 			err = response[respCnt].e
@@ -50,6 +52,7 @@ func Test_RL7023_Close(t *testing.T) {
 	m := transport.NewMockSerial(ctrl)
 	mock_RL7023(t, m, "SKTERM\r\n", []resp_RL7023{
 		{"OK\r\n", nil},
+		{"EVENT 27 FE80::2\r\n", nil},
 	})
 
 	c := &RL7023Client{serial: m}
@@ -190,7 +193,7 @@ func Test_RL7023_SetBRoutePassword(t *testing.T) {
 			mock_RL7023(t, m, tc.input, tc.output)
 
 			c := &RL7023Client{serial: m}
-			err := c.SetBRoutePassword(tc.input)
+			err := c.SetBRoutePassword(tc.pw)
 
 			if tc.err != nil && err != nil {
 				if tc.err.Error() != err.Error() {
@@ -248,7 +251,7 @@ func Test_RL7023_SetBRouteID(t *testing.T) {
 			mock_RL7023(t, m, tc.input, tc.output)
 			c := &RL7023Client{serial: m}
 
-			err := c.SetBRouteID(tc.input)
+			err := c.SetBRouteID(tc.pw)
 
 			if tc.err != nil && err != nil {
 				if tc.err.Error() != err.Error() {
