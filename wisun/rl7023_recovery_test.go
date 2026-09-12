@@ -251,6 +251,38 @@ func Test_RL7023_SendFailureSkipsInterleavedEvent(t *testing.T) {
 	}
 }
 
+func Test_RL7023_SendSkipsStaleECHONETResponse(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := transport.NewMockSerial(ctrl)
+
+	request := []byte{0x10, 0x81, 0x01, 0x01}
+	staleResponse := "1081000102880105FF017201E704000001F8"
+	currentResponse := "1081010102880105FF017201E704000001F8"
+	responses := []string{
+		"SKSENDTO 1 2001:DB8::2 0E1A 1 0 0004 \r\n",
+		"EVENT 21 2001:DB8::2 0 00\r\n",
+		"OK\r\n",
+		"\r\n",
+		"ERXUDP FE80::1 FE80::2 0E1A 0E1A 001C6400030C12A4 1 0 0012 " + staleResponse + "\r\n",
+		"ERXUDP FE80::1 FE80::2 0E1A 0E1A 001C6400030C12A4 1 0 0012 " + currentResponse + "\r\n",
+	}
+	mockRL7023Script(t, m, responses)
+
+	c := &RL7023Client{
+		serial:  m,
+		panDesc: PanDesc{IPV6Addr: "2001:DB8::2"},
+	}
+
+	got, err := c.Send(request)
+	if err != nil {
+		t.Fatalf("send failed: %v", err)
+	}
+	if string(got) != string([]byte{0x10, 0x81, 0x01, 0x01, 0x02, 0x88, 0x01, 0x05, 0xff, 0x01, 0x72, 0x01, 0xe7, 0x04, 0x00, 0x00, 0x01, 0xf8}) {
+		t.Fatalf("expected current-TID response, got %x", got)
+	}
+}
+
 func Test_RL7023_TermWaitsForSessionEndBeforeNextCommand(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -428,6 +428,11 @@ func (c *RL7023Client) Send(data []byte) ([]byte, error) {
 // sendCore is the internal implementation of Send
 func (c *RL7023Client) sendCore(data []byte) ([]byte, error) {
 	ipv6 := c.panDesc.IPV6Addr
+	correlateTID := len(data) >= 4 && data[0] == 0x10 && data[1] == 0x81
+	var expectedTID []byte
+	if correlateTID {
+		expectedTID = data[2:4]
+	}
 	cmd := []byte(fmt.Sprintf("SKSENDTO 1 %s 0E1A 1 0 %04X ", ipv6, len(data)))
 	cmd = append(cmd, data...)
 	cmd = append(cmd, []byte("\r\n")...)
@@ -487,7 +492,21 @@ func (c *RL7023Client) sendCore(data []byte) ([]byte, error) {
 						src := tokens[9]
 						dst := make([]byte, hex.DecodedLen(len(src)))
 						n, err := hex.Decode(dst, src)
-						return dst[:n], err
+						if err != nil {
+							return nil, err
+						}
+						dst = dst[:n]
+						if correlateTID {
+							if len(dst) < 4 {
+								log.Printf("discarding ERXUDP without ECHONET Lite TID [%s]", stringWithBinary(dst))
+								continue
+							}
+							if !bytes.Equal(dst[2:4], expectedTID) {
+								log.Printf("discarding stale ERXUDP TID[%02X%02X], expected TID[%02X%02X]", dst[2], dst[3], expectedTID[0], expectedTID[1])
+								continue
+							}
+						}
+						return dst, nil
 					case 716: // PANA
 						log.Println("PANA data")
 					case 19788: // MLE
