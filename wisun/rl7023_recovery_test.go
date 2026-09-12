@@ -264,6 +264,7 @@ func Test_RL7023_TermWaitsForSessionEndBeforeNextCommand(t *testing.T) {
 				"EVENT 21 FE80::2 0 00\r\n",
 				"ERXUDP FE80::1 FE80::2 0E1A 0E1A 001C6400030C12A4 1 0 0004 00000000\r\n",
 				"EVENT 27 FE80::2\r\n",
+				"ERXUDP FE80::1 FF02::1 0E1A 0E1A 001C6400030C12A4 1 0 0002 FFFF\r\n",
 				"SKSETPWD C test-password\r\n",
 				"OK\r\n",
 			},
@@ -274,6 +275,7 @@ func Test_RL7023_TermWaitsForSessionEndBeforeNextCommand(t *testing.T) {
 				"SKTERM\r\n",
 				"OK\r\n",
 				"EVENT 28 FE80::2\r\n",
+				"ERXUDP FE80::1 FF02::1 0E1A 0E1A 001C6400030C12A4 1 0 0002 FFFF\r\n",
 				"SKSETPWD C test-password\r\n",
 				"OK\r\n",
 			},
@@ -283,6 +285,7 @@ func Test_RL7023_TermWaitsForSessionEndBeforeNextCommand(t *testing.T) {
 			responses: []string{
 				"SKTERM\r\n",
 				"FAIL ER10\r\n",
+				"ERXUDP FE80::1 FF02::1 0E1A 0E1A 001C6400030C12A4 1 0 0002 FFFF\r\n",
 				"SKSETPWD C test-password\r\n",
 				"OK\r\n",
 			},
@@ -330,18 +333,22 @@ func Test_RL7023_ReconnectResynchronizesAndContinuesAfterER10(t *testing.T) {
 	m := transport.NewMockSerial(ctrl)
 
 	responses := []string{
-		// Failed data send and its trailing command-completion lines.
+		// Asynchronous notifications can precede each command echo.
+		"ERXUDP FE80::1 FF02::1 0E1A 0E1A 001C6400030C12A4 1 0 0002 FFFF\r\n",
 		"SKSENDTO 1 2001:DB8::2 0E1A 1 0 0004 \r\n",
 		"EVENT 21 2001:DB8::2 0 01\r\n",
 		"OK\r\n",
 		"\r\n",
 		// Connect's single SKTERM is allowed to return FAIL ER10.
+		"EVENT 28 FE80::2\r\n",
 		"SKTERM\r\n",
 		"FAIL ER10\r\n",
+		"ERXUDP FE80::1 FF02::1 0E1A 0E1A 001C6400030C12A4 1 0 0002 FFFF\r\n",
 		"SKSETPWD C test-password\r\n",
 		"OK\r\n",
 		"SKSETRBID test-id\r\n",
 		"OK\r\n",
+		"EVENT 21 FE80::2 0 00\r\n",
 		"SKSCAN 2 FFFFFFFF 4 0 \r\n",
 		"OK\r\n",
 		"EVENT 20 FE80::1 0\r\n",
@@ -420,4 +427,77 @@ func Test_RL7023_ReconnectResynchronizesAndContinuesAfterER10(t *testing.T) {
 	if orderIndex != len(order) {
 		t.Fatalf("unexpected reconnect command order, matched %d/%d: %v", orderIndex, len(order), *sent)
 	}
+}
+
+func Test_RL7023_SendSkipsPreEchoNotifications(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failed=%v", failed), func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			m := transport.NewMockSerial(ctrl)
+			command := "SKSENDTO 1 FE80::2 0E1A 1 0 0004 \r\n"
+			notification := "ERXUDP FE80::1 FF02::1 0E1A 0E1A 001C6400030C12A4 1 0 0010 108100000EF0010EF0017301D50401028801\r\n"
+			reply := "ERXUDP FE80::1 FE80::2 0E1A 0E1A 001C6400030C12A4 1 0 0002 1234\r\n"
+			status := "00"
+			if failed {
+				status = "01"
+			}
+			responses := []string{notification, "EVENT 21 FE80::2 0 00\r\n", "\r\n", command, "EVENT 21 FE80::2 0 " + status + "\r\n", "OK\r\n", "\r\n"}
+			if !failed {
+				responses = append(responses, reply)
+			}
+			responses = append(responses, command, "EVENT 21 FE80::2 0 00\r\n", "OK\r\n", "\r\n", reply)
+			mockRL7023Script(t, m, responses)
+			c := &RL7023Client{serial: m, panDesc: PanDesc{IPV6Addr: "FE80::2"}}
+			got, err := c.Send([]byte("test"))
+			if failed {
+				if err == nil || !strings.Contains(err.Error(), "EVENT 21 status 01") {
+					t.Fatalf("expected send failure, got %v", err)
+				}
+			} else if err != nil || string(got) != "\x12\x34" {
+				t.Fatalf("unexpected reply %x, %v", got, err)
+			}
+			got, err = c.Send([]byte("test"))
+			if err != nil || string(got) != "\x12\x34" {
+				t.Fatalf("next command lost synchronization: %x, %v", got, err)
+			}
+		})
+	}
+}
+
+func Test_RL7023_EchoWaitBoundaries(t *testing.T) {
+	for _, line := range []string{"OK", "FAIL ER10", "SKOTHER", "EVENTUAL"} {
+		t.Run(line, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			m := transport.NewMockSerial(ctrl)
+			m.EXPECT().Send(gomock.Any()).Return(nil)
+			m.EXPECT().Recv().Return([]byte(line), nil).Times(1)
+			c := &RL7023Client{serial: m}
+			if err := c.send([]byte("SKVER\r\n")); err == nil {
+				t.Fatal("expected unexpected echo error")
+			}
+		})
+	}
+	t.Run("bounded notification flood", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		m := transport.NewMockSerial(ctrl)
+		m.EXPECT().Send(gomock.Any()).Return(nil)
+		m.EXPECT().Recv().Return([]byte("EVENT 21 FE80::2 0 00"), nil).Times(maxRL7023PreEchoLines + 1)
+		c := &RL7023Client{serial: m}
+		if err := c.send([]byte("SKVER\r\n")); err == nil || !strings.Contains(err.Error(), "command echo not found") {
+			t.Fatalf("expected bounded failure: %v", err)
+		}
+	})
+	t.Run("read error after notification", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		m := transport.NewMockSerial(ctrl)
+		gomock.InOrder(m.EXPECT().Send(gomock.Any()).Return(nil), m.EXPECT().Recv().Return([]byte("EVENT 28 FE80::2"), nil), m.EXPECT().Recv().Return(nil, fmt.Errorf("serial: timeout")))
+		c := &RL7023Client{serial: m}
+		if err := c.send([]byte("SKVER\r\n")); err == nil || err.Error() != "serial: timeout" {
+			t.Fatalf("expected read error: %v", err)
+		}
+	})
 }
