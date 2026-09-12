@@ -44,6 +44,8 @@ func (c *RL7023Client) Close() {
 	c.serial.Close()
 }
 
+const maxRL7023PreEchoLines = 64
+
 // Send sends serial command
 func (c *RL7023Client) send(in []byte) error {
 	c.sendSeq++
@@ -52,15 +54,28 @@ func (c *RL7023Client) send(in []byte) error {
 	if err != nil {
 		return err
 	}
-	// Echoback
-	echo, err := c.recv()
-	if err != nil {
-		return err
+	// Unsolicited notifications can already be buffered when we write.
+	// Only skip asynchronous lines before the echo: replaying them as this
+	// command's response could return an old ERXUDP and leave its OK unread.
+	// Stop at the echo, with both a line budget and a deadline for noisy links.
+	deadline := time.Now().Add(commandTimeout)
+	for skipped := 0; skipped <= maxRL7023PreEchoLines; skipped++ {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("command echo timeout")
+		}
+		echo, err := c.recv()
+		if err != nil {
+			return err
+		}
+		if commandEchoMatches(in, echo) {
+			return nil
+		}
+		if len(echo) != 0 && !bytes.HasPrefix(echo, []byte("EVENT ")) && !bytes.HasPrefix(echo, []byte("ERXUDP ")) {
+			return fmt.Errorf("unexpected command echo [%s]", stringWithBinary(echo))
+		}
+		log.Printf("discarding asynchronous line before command echo [%s]", stringWithBinary(echo))
 	}
-	if !commandEchoMatches(in, echo) {
-		return fmt.Errorf("unexpected command echo [%s]", stringWithBinary(echo))
-	}
-	return nil
+	return fmt.Errorf("command echo not found within %d asynchronous lines", maxRL7023PreEchoLines)
 }
 
 func commandEchoMatches(command, echo []byte) bool {
